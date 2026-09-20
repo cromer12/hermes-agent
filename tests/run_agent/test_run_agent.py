@@ -2577,6 +2577,43 @@ class TestExecuteToolCalls:
 
         mock_print.assert_not_called()
 
+    def test_pending_fallback_pauses_before_any_fallback_api_call(self, agent):
+        agent._fallback_confirmation_pending = {
+            "provider": "custom:tiiny",
+            "model": "Qwen/Qwen3.6-35B-A3B",
+        }
+        agent._fallback_activated = True
+        agent._persist_session = lambda *args, **kwargs: None
+        agent._save_trajectory = lambda *args, **kwargs: None
+        api_call = MagicMock(side_effect=AssertionError("fallback model must not be called"))
+        agent._interruptible_api_call = api_call
+
+        result = agent.run_conversation("finish the deployment")
+
+        assert result["completed"] is False
+        assert result["fallback_confirmation_required"] is True
+        assert "continue on Tiiny" in result["final_response"]
+        api_call.assert_not_called()
+
+    def test_explicit_consent_resumes_pending_fallback(self, agent):
+        agent._fallback_confirmation_pending = {
+            "provider": "custom:tiiny",
+            "model": "Qwen/Qwen3.6-35B-A3B",
+        }
+        agent._fallback_activated = True
+        agent._persist_session = lambda *args, **kwargs: None
+        agent._save_trajectory = lambda *args, **kwargs: None
+        agent._interruptible_api_call = MagicMock(
+            return_value=_mock_response(content="Continued locally")
+        )
+
+        result = agent.run_conversation("continue on Tiiny")
+
+        assert result["completed"] is True
+        assert result["final_response"] == "Continued locally"
+        agent._interruptible_api_call.assert_called_once()
+        assert agent._fallback_confirmation_pending is None
+
     def test_run_conversation_suppresses_retry_noise_in_parseable_quiet_mode(self, agent):
         class _RateLimitError(Exception):
             status_code = 429

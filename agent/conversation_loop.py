@@ -82,6 +82,71 @@ logger = logging.getLogger(__name__)
 # to treat it as cancellation metadata rather than assistant prose.
 INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model response ("
 
+_FALLBACK_CONTINUE_PHRASES = frozenset({
+    "continue on tiiny",
+    "continue locally",
+    "yes continue on tiiny",
+    "yes continue locally",
+})
+_FALLBACK_WAIT_PHRASES = frozenset({
+    "no",
+    "wait",
+    "wait for cloud",
+    "wait for the cloud",
+    "wait for refresh",
+    "wait for model refresh",
+})
+
+
+def _fallback_confirmation_action(user_message: Any) -> Optional[str]:
+    """Classify only explicit fallback consent or refusal phrases."""
+    if not isinstance(user_message, str):
+        return None
+    normalized = re.sub(r"[^a-z0-9]+", " ", user_message.lower()).strip()
+    if normalized in _FALLBACK_CONTINUE_PHRASES:
+        return "continue"
+    if normalized in _FALLBACK_WAIT_PHRASES:
+        return "wait"
+    return None
+
+
+def _fallback_confirmation_message(pending: Dict[str, str]) -> str:
+    """Return the deterministic pause prompt without invoking a fallback LLM."""
+    target = pending.get("model") or "the configured fallback model"
+    return (
+        f"The cloud model is unavailable, so I paused this thread before sending "
+        f"its conversation context, tool state, or reasoning state to {target}. "
+        "Reply `continue on Tiiny` to resume this thread on the local fallback, "
+        "or `wait for cloud` to keep it paused and retry a high-end model later."
+    )
+
+
+def _fallback_confirmation_result(
+    agent,
+    messages: List[Dict[str, Any]],
+    conversation_history: List[Dict[str, Any]],
+    api_call_count: int,
+    pending: Dict[str, str],
+    *,
+    waiting: bool = False,
+) -> Dict[str, Any]:
+    text = (
+        "This thread is paused. Retry your request when the high-end model is available, "
+        "or reply `continue on Tiiny` if you decide to resume locally."
+        if waiting
+        else _fallback_confirmation_message(pending)
+    )
+    agent._clear_status_buffer()
+    agent._persist_session(messages, conversation_history)
+    return {
+        "final_response": text,
+        "messages": messages,
+        "completed": False,
+        "api_calls": api_call_count,
+        "fallback_confirmation_required": not waiting,
+        "fallback_waiting_for_cloud": waiting,
+    }
+
 # Modules that indicate a deterministic local processing error when they
 # appear in an exception traceback WITHOUT any API-call module. Used by the
 # outer-loop error classifier to avoid retrying bugs that will fail
@@ -630,6 +695,15 @@ def run_conversation(
         except Exception:
             pass
 
+    _fallback_pending_at_turn_start = getattr(
+        agent, "_fallback_confirmation_pending", None
+    )
+    _fallback_action = (
+        _fallback_confirmation_action(user_message)
+        if _fallback_pending_at_turn_start
+        else None
+    )
+
     # ── Per-turn setup (the prologue) ──
     # All once-per-turn setup — stdio guarding, retry-counter resets, user
     # message sanitization, todo/nudge hydration, system-prompt restore-or-
@@ -669,6 +743,32 @@ def run_conversation(
     _should_review_memory = _ctx.should_review_memory
     _plugin_user_context = _ctx.plugin_user_context
     _ext_prefetch_cache = _ctx.ext_prefetch_cache
+
+    if _fallback_pending_at_turn_start:
+        if _fallback_action == "continue":
+            agent._fallback_confirmation_pending = None
+        elif _fallback_action == "wait":
+            agent._fallback_confirmation_pending = None
+            agent._rate_limited_until = 0
+            agent._restore_primary_runtime()
+            agent._cleanup_task_resources(effective_task_id)
+            return _fallback_confirmation_result(
+                agent,
+                messages,
+                conversation_history,
+                0,
+                _fallback_pending_at_turn_start,
+                waiting=True,
+            )
+        else:
+            agent._cleanup_task_resources(effective_task_id)
+            return _fallback_confirmation_result(
+                agent,
+                messages,
+                conversation_history,
+                0,
+                _fallback_pending_at_turn_start,
+            )
 
     # Commentary deduplication spans all provider continuations and tool calls
     # within one user turn, but must not suppress the same phrase next turn.
@@ -719,6 +819,16 @@ def run_conversation(
         )
 
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
+        _fallback_pending = getattr(agent, "_fallback_confirmation_pending", None)
+        if _fallback_pending:
+            agent._cleanup_task_resources(effective_task_id)
+            return _fallback_confirmation_result(
+                agent,
+                messages,
+                conversation_history,
+                api_call_count,
+                _fallback_pending,
+            )
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot
         agent._checkpoint_mgr.new_turn()
 

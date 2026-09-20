@@ -103,6 +103,25 @@ class TestFallbackChainAdvancement:
             assert agent.model == "gpt-4o"
             assert agent._fallback_activated is True
 
+    def test_confirmation_required_marks_fallback_for_pause_before_use(self):
+        fb = {
+            "provider": "openai",
+            "model": "gpt-4o",
+            "require_confirmation": True,
+        }
+        agent = _make_agent(fallback_model=[fb])
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "gpt-4o"),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.model == "gpt-4o"
+        assert agent._fallback_confirmation_pending == {
+            "provider": "openai",
+            "model": "gpt-4o",
+        }
+
     def test_second_fallback_works(self):
         fbs = [
             {"provider": "openai", "model": "gpt-4o"},

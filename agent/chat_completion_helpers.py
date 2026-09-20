@@ -1868,6 +1868,12 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # answering, so "what model are you?" doesn't report the primary.
         rewrite_prompt_model_identity(agent, fb_model, fb_provider)
 
+        if fb.get("require_confirmation") is True:
+            agent._fallback_confirmation_pending = {
+                "provider": fb_provider,
+                "model": fb_model,
+            }
+
         agent._buffer_status(
             f"🔄 Primary model failed — switching to fallback: "
             f"{fb_model} via {fb_provider}"

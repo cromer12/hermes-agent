@@ -1310,6 +1310,11 @@ def restore_primary_runtime(agent) -> bool:
     The gateway caches agents across messages (``_agent_cache`` in
     ``gateway/run.py``), so this restoration IS needed there too.
     """
+    if getattr(agent, "_fallback_confirmation_pending", None):
+        # The fallback client is prepared but must not receive context until
+        # the user explicitly consents on the next turn.
+        return False
+
     if not agent._fallback_activated:
         # Reset the chain index even when no fallback was activated this
         # turn.  Without this, a turn where _try_activate_fallback() was

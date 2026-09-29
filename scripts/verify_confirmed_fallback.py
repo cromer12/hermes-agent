@@ -61,6 +61,6 @@ def main():
             if waited.get('fallback_waiting_for_cloud') is not True: failures.append('wait_ack_missing')
     finally:
         server.shutdown(); server.server_close(); thread.join(timeout=2)
-    result={"ok":not failures,"failures":failures,"requests_before_consent":pre_consent_count,"consent_requests":before-pre_consent_count,"wait_request_delta":len(counter.bodies)-before,"diagnostic":{"consent_final":second.get('final_response') if 'second' in locals() else None,"consent_completed":second.get('completed') if 'second' in locals() else None,"model":getattr(consent_agent,'model',None) if 'consent_agent' in locals() else None,"base_url":str(getattr(consent_agent,'base_url','')) if 'consent_agent' in locals() else None,"message_previews":[content[:160] for content in message_contents] if 'message_contents' in locals() else []}}
+    result={"ok":not failures,"failures":failures,"requests_before_consent":pre_consent_count,"consent_requests":before-pre_consent_count,"wait_request_delta":len(counter.bodies)-before}
     print(json.dumps(result,sort_keys=True,separators=(',',':'))); return 0 if result['ok'] else 1
 if __name__=='__main__': raise SystemExit(main())

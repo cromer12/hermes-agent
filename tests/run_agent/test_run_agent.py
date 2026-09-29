@@ -2614,6 +2614,42 @@ class TestExecuteToolCalls:
         agent._interruptible_api_call.assert_called_once()
         assert agent._fallback_confirmation_pending is None
 
+    def test_rate_limit_fallback_pauses_at_inner_retry_chokepoint_before_second_api_call(self, agent):
+        class _RateLimitError(Exception):
+            status_code = 429
+
+            def __str__(self):
+                return "Error code: 429 - Rate limit exceeded."
+
+        api_call = MagicMock(side_effect=_RateLimitError())
+        agent._interruptible_api_call = api_call
+        agent._api_max_retries = 1
+        agent._fallback_chain = [{
+            "provider": "custom:tiiny", "model": "Qwen/Qwen3.6-35B-A3B",
+            "require_confirmation": True,
+        }]
+        agent._fallback_index = 0
+        agent._persist_session = lambda *args, **kwargs: None
+        agent._save_trajectory = lambda *args, **kwargs: None
+
+        def activate(*_args, **_kwargs):
+            agent._fallback_index = 1
+            agent._fallback_activated = True
+            agent._fallback_confirmation_pending = {
+                "provider": "custom:tiiny",
+                "model": "Qwen/Qwen3.6-35B-A3B",
+            }
+            return True
+
+        agent._try_activate_fallback = MagicMock(side_effect=activate)
+
+        with patch("run_agent.time.sleep", return_value=None):
+            result = agent.run_conversation("keep working")
+
+        assert result["fallback_confirmation_required"] is True
+        assert "continue on Tiiny" in result["final_response"]
+        assert api_call.call_count == 1
+
     def test_run_conversation_suppresses_retry_noise_in_parseable_quiet_mode(self, agent):
         class _RateLimitError(Exception):
             status_code = 429

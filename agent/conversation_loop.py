@@ -1335,6 +1335,23 @@ def run_conversation(
         agent._current_api_request_id = api_request_id
 
         while retry_count < max_retries:
+            # A confirmation-required fallback may be activated by any error
+            # branch below. Every such branch re-enters this retry loop, so this
+            # is the single pre-dispatch chokepoint that prevents the fallback
+            # provider from seeing conversation/tool/reasoning context before
+            # the user explicitly opts in on the next turn.
+            _fallback_pending = getattr(agent, "_fallback_confirmation_pending", None)
+            if _fallback_pending:
+                if thinking_spinner:
+                    thinking_spinner.stop()
+                agent._cleanup_task_resources(effective_task_id)
+                return _fallback_confirmation_result(
+                    agent,
+                    messages,
+                    conversation_history,
+                    api_call_count,
+                    _fallback_pending,
+                )
             # ── Nous Portal rate limit guard ──────────────────────
             # If another session already recorded that Nous is rate-
             # limited, skip the API call entirely.  Each attempt
